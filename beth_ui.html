@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Beth</title>
+<style>
+  body {
+    margin: 0;
+    background: #050508;
+    overflow: hidden;
+    font-family: 'Segoe UI', sans-serif;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 1s;
+  }
+  #canvas { position: absolute; top: 0; left: 0; }
+  .hud {
+    position: relative;
+    z-index: 10;
+    text-align: center;
+    color: #cfe8ff;
+    pointer-events: none;
+  }
+
+  .name {
+    font-size: 32px;
+    letter-spacing: 12px;
+    font-weight: 200;
+    text-shadow: 0 0 20px var(--glow-color);
+  }
+  .status {
+    font-size: 13px;
+    letter-spacing: 4px;
+    color: var(--accent-color);
+    margin-top: 8px;
+    text-transform: uppercase;
+    transition: color 0.4s;
+  }
+  .input-container {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    display: flex;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 8px 15px;
+    border-radius: 25px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    transition: opacity 0.3s, border-color 0.3s;
+  }
+  .input-container:focus-within {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 15px var(--glow-color);
+  }
+  #user-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #cfe8ff;
+    font-size: 16px;
+    width: 300px;
+    text-align: center;
+    font-family: 'Segoe UI', sans-serif;
+  }
+  #send-btn {
+    background: transparent;
+    border: none;
+    color: var(--accent-color);
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 14px;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+  #send-btn:hover {
+    color: #fff;
+  }
+  .caption {
+    position: absolute;
+    bottom: 100px;
+    width: 80%;
+    left: 10%;
+    text-align: center;
+    color: #cfe8ff;
+    font-size: 18px;
+    font-weight: 300;
+    font-style: italic;
+    text-shadow: 0 0 10px rgba(100,200,255,0.4);
+    z-index: 10;
+    transition: opacity 0.5s;
+    opacity: 0;
+  }
+  /* Emotion colors */
+  .color-idle { --glow-color: rgba(100,200,255,0.6); --accent-color: #7fa8c9; }
+  .color-listening { --glow-color: rgba(0,255,255,0.8); --accent-color: #00ffff; }
+  .color-thinking { --glow-color: rgba(255,200,100,0.8); --accent-color: #ffcc88; }
+  .color-speaking { --glow-color: rgba(100,255,100,0.8); --accent-color: #88ff88; }
+  .color-error { --glow-color: rgba(255,100,100,0.8); --accent-color: #ff8888; }
+
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div class="hud">
+  <div class="name">B E T H</div>
+  <div class="status" id="status">Idle</div>
+</div>
+<div class="caption" id="caption"></div>
+
+<div class="input-container">
+  <input type="text" id="user-input" placeholder="Type a command..." autocomplete="off">
+  <button id="send-btn">Send</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H, cx, cy;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2; cy = H / 2;
+  initBgParticles();
+}
+window.addEventListener('resize', resize);
+
+let t = 0;
+let pulse = 0;
+let speedMult = 0.5;
+let glowMult = 0.6;
+
+// State targets: idle (nobody talking) is slow and dim,
+// listening/thinking/speaking ramp up speed and glow.
+const STATE_TARGETS = {
+  idle:      { speed: 0.5, glow: 0.6, color: 'color-idle', particleColor: 'rgba(140,200,255,0.8)', coreColor: 'rgba(255,220,160,0.8)' },
+  listening: { speed: 1.0, glow: 1.0, color: 'color-listening', particleColor: 'rgba(0,255,255,0.8)', coreColor: 'rgba(180,255,255,0.8)' },
+  thinking:  { speed: 1.4, glow: 1.3, color: 'color-thinking', particleColor: 'rgba(255,200,100,0.8)', coreColor: 'rgba(255,240,180,0.8)' },
+  speaking:  { speed: 1.9, glow: 1.7, color: 'color-speaking', particleColor: 'rgba(100,255,100,0.8)', coreColor: 'rgba(200,255,200,0.8)' },
+  error:     { speed: 0.7, glow: 1.2, color: 'color-error', particleColor: 'rgba(255,100,100,0.8)', coreColor: 'rgba(255,180,180,0.8)' }
+};
+let currentTarget = STATE_TARGETS.idle;
+
+// Called from Python via evaluate_js. e.g. setState('listening')
+function setState(name) {
+  if (STATE_TARGETS[name]) {
+    currentTarget = STATE_TARGETS[name];
+    document.body.className = currentTarget.color;
+  }
+  const label = name.charAt(0).toUpperCase() + name.slice(1);
+  document.getElementById('status').textContent =
+    name === 'idle' ? 'Idle' : label + '...';
+}
+window.setState = setState;
+
+function updateCaption(text) {
+  const el = document.getElementById('caption');
+  if (!text) {
+    el.style.opacity = '0';
+    return;
+  }
+  el.textContent = text;
+  el.style.opacity = '1';
+}
+window.updateCaption = updateCaption;
+
+async function sendCommand() {
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  updateCaption(`You: ${text}`);
+  input.value = '';
+
+  try {
+    // pywebview exposes the api on window.pywebview.api
+    const response = await window.pywebview.api.send_text(text);
+    updateCaption(`Beth: ${response}`);
+  } catch (e) {
+    console.error("Error sending command:", e);
+    updateCaption("Beth: I had trouble processing that command.");
+  }
+}
+
+document.getElementById('send-btn').addEventListener('click', sendCommand);
+document.getElementById('user-input').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') sendCommand();
+});
+
+// Ambient background particles - drift across the whole screen at all times
+let bgParticles = [];
+function initBgParticles() {
+  bgParticles = [];
+  const count = Math.floor((W * H) / 9000);
+  for (let i = 0; i < count; i++) {
+    bgParticles.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.15,
+      vy: (Math.random() - 0.5) * 0.15,
+      size: Math.random() * 1.3 + 0.4,
+      alpha: Math.random() * 0.35 + 0.08
+    });
+  }
+}
+
+function drawBgParticles() {
+  bgParticles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    if (p.x < 0) p.x = W; if (p.x > W) p.x = 0;
+    if (p.y < 0) p.y = H; if (p.y > H) p.y = 0;
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(150,200,255,${p.alpha})`;
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+// Particle swarm sphere
+const PARTICLE_R = 170;
+let particles = [];
+for (let i = 0; i < 500; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  particles.push({theta, phi, r: PARTICLE_R + Math.random()*16 - 8});
+}
+
+function drawParticles() {
+  const rotY = t * 0.3;
+  ctx.fillStyle = currentTarget.particleColor;
+  particles.forEach(p => {
+    const lon = p.theta + rotY;
+    let x = p.r * Math.sin(p.phi) * Math.cos(lon);
+    let z = p.r * Math.sin(p.phi) * Math.sin(lon);
+    let y = p.r * Math.cos(p.phi);
+    const scale = 340 / (340 + z);
+    const px = cx + x * scale;
+    const py = cy + y * scale;
+    const size = 2.2 * scale + pulse * 0.6;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI*2);
+    ctx.fill();
+  });
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 46 + pulse * 16);
+  grad.addColorStop(0, currentTarget.coreColor);
+  grad.addColorStop(1, 'rgba(255,220,160,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 46 + pulse * 16, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function animate() {
+  ctx.clearRect(0, 0, W, H);
+  drawBgParticles();
+
+  speedMult += (currentTarget.speed - speedMult) * 0.03;
+  glowMult += (currentTarget.glow - glowMult) * 0.03;
+
+  t += 0.015 * speedMult;
+  pulse = ((Math.sin(t * 2) + 1) / 2) * glowMult;
+  drawParticles();
+
+  requestAnimationFrame(animate);
+}
+
+resize();
+animate();
+</script>
+</body>
+</html>
